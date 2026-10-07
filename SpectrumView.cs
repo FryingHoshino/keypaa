@@ -19,13 +19,15 @@ public sealed class SpectrumView : FrameworkElement
     bool dragging;
     double dragX, dragMin;
 
-    static readonly SolidColorBrush Bg = Pal.Hex("#23272B"), Dim = Pal.Hex("#9CA3AF"),
-        Teal = Pal.Hex("#5EEAD4"), White = Pal.Hex("#F3F4F6");
-    static readonly SolidColorBrush Fill = Pal.Hex("#66E8820C");
-    static readonly Pen GridPen = Pal.MakePen(Pal.Hex("#3A4046"), 1);
-    static readonly Pen LinePen = Pal.MakePen(Pal.Hex("#F59E0B"), 1);
-    static readonly Pen EstPen = Pal.MakePen(Teal, 1.5, dashed: true);
-    static readonly Pen CursorPen = Pal.MakePen(Pal.Hex("#80FFFFFF"), 1);
+    static SolidColorBrush Bg => Theme.ChartBg;
+    static SolidColorBrush Dim => Theme.TextDim;
+    static SolidColorBrush Teal => Theme.Good;
+    static SolidColorBrush White => Theme.TextBright;
+    static SolidColorBrush Fill => Theme.SpectrumFill;
+    static Pen GridPen => Pal.MakePen(Theme.ChartGrid, 1);
+    static Pen LinePen => Pal.MakePen(Theme.SpectrumLine, 1);
+    static Pen EstPen => Pal.MakePen(Teal, 1.5, dashed: true);
+    static Pen CursorPen => Pal.MakePen(Theme.Cursor, 1);
 
     public void SetData(float[]? d, double estimateHz, string label)
     {
