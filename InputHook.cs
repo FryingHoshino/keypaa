@@ -67,28 +67,35 @@ public sealed class InputHook : IDisposable
 {
     public readonly ConcurrentQueue<RawEvent> Queue = new();
     public bool Active => hKb != IntPtr.Zero;
+    public string? Error { get; private set; }     // why a hook could not be installed (Win32 error code)
 
     readonly bool[] held = new bool[EventStore.LaneCount];
     long altUp;
     Thread? thread;
     uint threadId;
-    IntPtr hKb, hMs;
+    volatile IntPtr hKb, hMs;
+    readonly ManualResetEventSlim ready = new();
     Native.HookProc? kbProc, msProc;   // keep delegates alive
 
     public void Start()
     {
         thread = new Thread(Run) { IsBackground = true, Priority = ThreadPriority.Highest, Name = "InputHook" };
         thread.Start();
+        ready.Wait(2000);   // when this returns the hooks are installed (or failed) and the message queue exists
     }
 
     void Run()
     {
         threadId = Native.GetCurrentThreadId();
+        Native.PeekMessage(out _, IntPtr.Zero, 0, 0, 0);     // creates this thread's message queue so PostThreadMessage(WM_QUIT) works
         kbProc = KbProc;
         msProc = MsProc;
         var mod = Native.GetModuleHandle(null);
         hKb = Native.SetWindowsHookEx(13, kbProc, mod, 0);   // WH_KEYBOARD_LL
+        if (hKb == IntPtr.Zero) Error = $"keyboard hook error {Marshal.GetLastWin32Error()}";
         hMs = Native.SetWindowsHookEx(14, msProc, mod, 0);   // WH_MOUSE_LL
+        if (hMs == IntPtr.Zero) Error = (Error == null ? "" : Error + ", ") + $"mouse hook error {Marshal.GetLastWin32Error()}";
+        ready.Set();
 
         while (Native.GetMessage(out var m, IntPtr.Zero, 0, 0) > 0)
         {
@@ -180,6 +187,7 @@ public sealed class InputHook : IDisposable
         public static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
         [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(IntPtr hhk);
         [DllImport("user32.dll")] public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool PeekMessage(out MSG msg, IntPtr hWnd, uint min, uint max, uint remove);
         [DllImport("user32.dll")] public static extern int GetMessage(out MSG msg, IntPtr hWnd, uint min, uint max);
         [DllImport("user32.dll")] public static extern bool TranslateMessage(ref MSG msg);
         [DllImport("user32.dll")] public static extern IntPtr DispatchMessage(ref MSG msg);

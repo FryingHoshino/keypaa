@@ -8,7 +8,14 @@ namespace keypaa;
 
 internal static class Pal
 {
-    static readonly Typeface Face = new("Segoe UI");
+    static Typeface face = new(Theme.FontName);
+    static Typeface Face => face;
+
+    static Pal()
+    {
+        // a new theme means new brushes and maybe a new font: drop everything keyed on the old ones
+        Theme.Changed += () => { pens.Clear(); texts.Clear(); face = new Typeface(Theme.FontName); };
+    }
 
     public static SolidColorBrush Hex(string hex)
     {
@@ -17,12 +24,34 @@ internal static class Pal
         return b;
     }
 
+    static readonly Dictionary<(Brush, double, bool), Pen> pens = new();
+
     public static Pen MakePen(Brush b, double thickness, bool dashed = false)
     {
-        var p = new Pen(b, thickness);
-        if (dashed) p.DashStyle = DashStyles.Dash;
-        p.Freeze();
+        var key = (b, thickness, dashed);
+        if (!pens.TryGetValue(key, out var p))
+        {
+            p = new Pen(b, thickness);
+            if (dashed) p.DashStyle = DashStyles.Dash;
+            if (b.IsFrozen) p.Freeze();
+            pens[key] = p;
+        }
         return p;
+    }
+
+    static readonly Dictionary<(string, double, Brush, double), FormattedText> texts = new();
+
+    /// <summary>Txt with a cache, for labels that are redrawn every frame.</summary>
+    public static FormattedText TxtC(Visual v, string s, double size, Brush b)
+    {
+        double dpi = VisualTreeHelper.GetDpi(v).PixelsPerDip;
+        var key = (s, size, b, dpi);
+        if (!texts.TryGetValue(key, out var ft))
+        {
+            if (texts.Count > 600) texts.Clear();
+            texts[key] = ft = Txt(v, s, size, b);
+        }
+        return ft;
     }
 
     public static FormattedText Txt(Visual v, string s, double size, Brush b) =>
@@ -39,15 +68,14 @@ public sealed class TimelineView : FrameworkElement
     long frozenNow;
     readonly Dictionary<string, FormattedText> cache = new();
 
-    static readonly SolidColorBrush Bg = Pal.Hex("#23272B"), Stripe = Pal.Hex("#2A2F34"), Dim = Pal.Hex("#9CA3AF");
-    static readonly Pen GridPen = Pal.MakePen(Pal.Hex("#3A4046"), 1);
-    static readonly Pen CwPen = Pal.MakePen(Pal.Hex("#FDE047"), 1.5);
-    static readonly Pen CcwPen = Pal.MakePen(Pal.Hex("#FB923C"), 1.5);
-    static readonly SolidColorBrush[] LaneBrush =
-    {
-        Pal.Hex("#5EEAD4"), Pal.Hex("#C4B5FD"), Pal.Hex("#FCA5A5"), Pal.Hex("#FDE68A"),
-        Pal.Hex("#93C5FD"), Pal.Hex("#F9A8D4"), Pal.Hex("#D1D5DB")
-    };
+    static SolidColorBrush Bg => Theme.ChartBg;
+    static SolidColorBrush Stripe => Theme.ChartStripe;
+    static SolidColorBrush Dim => Theme.TextDim;
+    static Pen GridPen => Pal.MakePen(Theme.ChartGrid, 1);
+    static Pen CwPen => Pal.MakePen(Theme.WheelCw, 1.5);
+    static Pen CcwPen => Pal.MakePen(Theme.WheelCcw, 1.5);
+
+    public void Refresh() { cache.Clear(); InvalidateVisual(); }
 
     public void SetFrozen(bool frozen)
     {
@@ -92,7 +120,7 @@ public sealed class TimelineView : FrameworkElement
         for (int i = 0; i < lanes; i++)
         {
             if (i % 2 == 0) dc.DrawRectangle(Stripe, null, new Rect(labelW, i * laneH, plotW, laneH));
-            var lbl = Cached(EventStore.LaneNames[i], LaneBrush[i], 12);
+            var lbl = Cached(EventStore.LaneNames[i], Theme.Lane(i), 12);
             dc.DrawText(lbl, new Point(6, i * laneH + (laneH - lbl.Height) / 2));
         }
 
@@ -121,7 +149,7 @@ public sealed class TimelineView : FrameworkElement
                 if (s.Start > now) continue;
                 double x1 = Math.Max(labelW, X(s.Start));
                 double x2 = Math.Min(labelW + plotW, X(Math.Min(end, now)));
-                dc.DrawRectangle(LaneBrush[lane], null, new Rect(x1, y + 3, Math.Max(2, x2 - x1), laneH - 6));
+                dc.DrawRectangle(Theme.Lane(lane), null, new Rect(x1, y + 3, Math.Max(2, x2 - x1), laneH - 6));
             }
         }
 

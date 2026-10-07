@@ -16,13 +16,29 @@ public sealed class ScopeView : FrameworkElement
     public bool IsFrozen { get; private set; }
     long frozenT;
 
-    static readonly SolidColorBrush Bg = Pal.Hex("#23272B"), Dim = Pal.Hex("#9CA3AF"), Green = Pal.Hex("#4ADE80"), Red = Pal.Hex("#F87171");
-    static readonly SolidColorBrush[] KeyBrush = { Pal.Hex("#5EEAD4"), Pal.Hex("#C4B5FD") };
-    static readonly Pen GridPen = Pal.MakePen(Pal.Hex("#3A4046"), 1), RefPen = Pal.MakePen(Pal.Hex("#6B7280"), 1, true);
-    static readonly Pen TrigPen = Pal.MakePen(Pal.Hex("#FBBF24"), 1.2, true);
-    static readonly Pen[] LinePen = { Pal.MakePen(KeyBrush[0], 1.4), Pal.MakePen(KeyBrush[1], 1.4) };
+    static SolidColorBrush Bg => Theme.ChartBg;
+    static SolidColorBrush Dim => Theme.TextDim;
+    static SolidColorBrush Green => Theme.ScopePress;
+    static SolidColorBrush Red => Theme.ScopeRelease;
+    static SolidColorBrush[] keyBrush = Array.Empty<SolidColorBrush>();
+    static Pen[] linePen = Array.Empty<Pen>();
+    static Pen GridPen => Pal.MakePen(Theme.ChartGrid, 1);
+    static Pen RefPen => Pal.MakePen(Theme.ScopeRef, 1, true);
+    static Pen TrigPen => Pal.MakePen(Theme.ScopeTrigger, 1.2, true);
 
-    public void Add(ScopeSample s) { Samples.Add(s); if (Samples.Count > 120000) Samples.RemoveRange(0, 40000); }
+    static void BuildCache()
+    {
+        keyBrush = new[] { Theme.ScopeKey1, Theme.ScopeKey2 };
+        linePen = new[] { Pal.MakePen(Theme.ScopeKey1, 1.4), Pal.MakePen(Theme.ScopeKey2, 1.4) };
+    }
+    static ScopeView() { BuildCache(); Theme.Changed += BuildCache; }
+
+    public void Add(ScopeSample s)
+    {
+        if (Samples.Count > 0 && s.T < Samples[^1].T - 500_000) Samples.Clear();   // keypad restarted: device clock went back
+        Samples.Add(s);
+        if (Samples.Count > 120000) Samples.RemoveRange(0, 40000);
+    }
     public void Clear() { Samples.Clear(); InvalidateVisual(); }
     public void SetFrozen(bool f) { IsFrozen = f; if (f && Samples.Count > 0) frozenT = Samples[^1].T; InvalidateVisual(); }
 
@@ -58,9 +74,9 @@ public sealed class ScopeView : FrameworkElement
         {
             double x = L + pw - k * step / WindowSeconds * pw;
             dc.DrawLine(GridPen, new Point(x, 4), new Point(x, h - axis));
-            dc.DrawText(Pal.Txt(this, k == 0 ? "now" : $"-{k * step:0.###}s", 10, Dim), new Point(x - 12, h - axis + 2));
+            dc.DrawText(Pal.TxtC(this, k == 0 ? "now" : $"-{k * step:0.###}s", 10, Dim), new Point(x - 12, h - axis + 2));
         }
-        dc.DrawText(Pal.Txt(this, $"{WindowSeconds:0.##}s", 10, Dim), new Point(L, h - axis + 2));
+        dc.DrawText(Pal.TxtC(this, $"{WindowSeconds:0.##}s", 10, Dim), new Point(L, h - axis + 2));
 
         for (int key = 0; key < 2; key++)
             DrawPlot(dc, key, new Rect(L, 4 + key * (ph + 4), pw, ph), startT, span, lo, hi);
@@ -79,7 +95,7 @@ public sealed class ScopeView : FrameworkElement
         {
             double y = Y(level);
             dc.DrawLine(RefPen, new Point(r.Left, y), new Point(r.Right, y));
-            dc.DrawText(Pal.Txt(this, $"{lbl} {level}", 9, Dim), new Point(r.Left + 3, y - 12));
+            dc.DrawText(Pal.TxtC(this, $"{lbl} {level}", 9, Dim), new Point(r.Left + 3, y - 12));
         }
 
         Func<ScopeSample, double> val = s => key == 0 ? s.V0 : s.V1;
@@ -91,14 +107,14 @@ public sealed class ScopeView : FrameworkElement
         var tg = Line(r, lo, hi, startT, span, trig, Y);
         if (tg != null) dc.DrawGeometry(null, TrigPen, tg);
         var vg = Line(r, lo, hi, startT, span, val, Y);
-        if (vg != null) dc.DrawGeometry(null, LinePen[key], vg);
+        if (vg != null) dc.DrawGeometry(null, linePen[key], vg);
 
         // press (green, below) / release (red, above) markers
         var up = new StreamGeometry(); var dn = new StreamGeometry();
         int marks = 0;
         using (var cu = up.Open()) using (var cd = dn.Open())
         {
-            for (int i = Math.Max(lo, 1); i < hi && marks < 400; i++)
+            for (int i = hi - 1; i >= Math.Max(lo, 1) && marks < 400; i--)   // newest first, so the cap drops the oldest markers
             {
                 bool a = ((Samples[i - 1].F >> key) & 1) == 1, b = ((Samples[i].F >> key) & 1) == 1;
                 if (a == b) continue;
@@ -114,7 +130,7 @@ public sealed class ScopeView : FrameworkElement
         dc.Pop();
 
         dc.DrawRectangle(null, GridPen, r);
-        dc.DrawText(Pal.Txt(this, key == 0 ? "Key 1 (y)" : "Key 2 (u)", 12, KeyBrush[key]), new Point(r.Right - 80, r.Top + 3));
+        dc.DrawText(Pal.TxtC(this, key == 0 ? "Key 1 (y)" : "Key 2 (u)", 12, keyBrush[key]), new Point(r.Right - 80, r.Top + 3));
     }
 
     /// <summary>Polyline with per-pixel min/max so a 2 kHz stream stays fast and still shows every spike.</summary>
@@ -150,12 +166,16 @@ public sealed class ScopeView : FrameworkElement
 /// <summary>Overlaid latency distributions (area-normalised) for the ticked CSV sessions.</summary>
 public sealed class HistogramView : FrameworkElement
 {
-    public static readonly SolidColorBrush[] Palette =
-        { Pal.Hex("#5EEAD4"), Pal.Hex("#FBBF24"), Pal.Hex("#C4B5FD"), Pal.Hex("#F87171"), Pal.Hex("#60A5FA"), Pal.Hex("#A3E635") };
-    public List<(string Name, Brush Color, double[] Data)> Series { get; set; } = new();
+    public static SolidColorBrush[] Palette { get; private set; } = Array.Empty<SolidColorBrush>();
+    static void RebuildPalette() => Palette = new[] { Theme.Hist1, Theme.Hist2, Theme.Hist3, Theme.Hist4, Theme.Hist5, Theme.Hist6 };
+    static HistogramView() { RebuildPalette(); Theme.Changed += RebuildPalette; }
 
-    static readonly SolidColorBrush Bg = Pal.Hex("#23272B"), Dim = Pal.Hex("#9CA3AF");
-    static readonly Pen GridPen = Pal.MakePen(Pal.Hex("#3A4046"), 1);
+    /// <summary>ColorIndex points into Palette, so a theme change recolours existing curves.</summary>
+    public List<(string Name, int ColorIndex, double[] Data)> Series { get; set; } = new();
+
+    static SolidColorBrush Bg => Theme.ChartBg;
+    static SolidColorBrush Dim => Theme.TextDim;
+    static Pen GridPen => Pal.MakePen(Theme.ChartGrid, 1);
 
     static double NiceStep(double raw)
     {
@@ -172,7 +192,7 @@ public sealed class HistogramView : FrameworkElement
         if (pw < 60 || ph < 40) return;
         if (Series.Count == 0)
         {
-            dc.DrawText(Pal.Txt(this, "Tick one or more sessions on the left to compare latency distributions", 12, Dim), new Point(L + 6, T + 6));
+            dc.DrawText(Pal.TxtC(this, "Tick one or more sessions on the left to compare latency distributions", 12, Dim), new Point(L + 6, T + 6));
             return;
         }
 
@@ -185,7 +205,7 @@ public sealed class HistogramView : FrameworkElement
         for (int s = 0; s < Series.Count; s++)
         {
             dens[s] = new double[bins];
-            foreach (var v in Series[s].Data) { int b = (int)((v - lo) / bw); if (b >= 0 && b < bins) dens[s][b]++; }
+            foreach (var v in Series[s].Data) { int b = (int)Math.Floor((v - lo) / bw); if (b >= 0 && b < bins) dens[s][b]++; }
             for (int b = 0; b < bins; b++) dens[s][b] /= Series[s].Data.Length * bw;
             ymax = Math.Max(ymax, dens[s].Max());
         }
@@ -196,7 +216,7 @@ public sealed class HistogramView : FrameworkElement
         {
             double x = L + (f - lo) / (hi - lo) * pw;
             dc.DrawLine(GridPen, new Point(x, T), new Point(x, T + ph));
-            dc.DrawText(Pal.Txt(this, f.ToString("0.##") + " ms", 10, Dim), new Point(x - 16, T + ph + 3));
+            dc.DrawText(Pal.TxtC(this, f.ToString("0.##") + " ms", 10, Dim), new Point(x - 16, T + ph + 3));
         }
 
         for (int s = 0; s < Series.Count; s++)
@@ -211,11 +231,14 @@ public sealed class HistogramView : FrameworkElement
                 c.LineTo(new Point(pts[^1].X, T + ph), true, false);
             }
             g.Freeze();
-            var col = ((SolidColorBrush)Series[s].Color).Color;
-            dc.DrawGeometry(new SolidColorBrush(Color.FromArgb(55, col.R, col.G, col.B)), Pal.MakePen(Series[s].Color, 1.6), g);
-            dc.DrawRectangle(Series[s].Color, null, new Rect(w - 190, T + 4 + s * 15, 9, 9));
+            var brush = Palette[Series[s].ColorIndex % Palette.Length];
+            var col = brush.Color;
+            var fill = new SolidColorBrush(Color.FromArgb(55, col.R, col.G, col.B));
+            fill.Freeze();
+            dc.DrawGeometry(fill, Pal.MakePen(brush, 1.6), g);
+            dc.DrawRectangle(brush, null, new Rect(w - 190, T + 4 + s * 15, 9, 9));
             string name = Series[s].Name.Length > 24 ? Series[s].Name[..24] : Series[s].Name;
-            dc.DrawText(Pal.Txt(this, name, 10, Dim), new Point(w - 176, T + 1 + s * 15));
+            dc.DrawText(Pal.TxtC(this, name, 10, Dim), new Point(w - 176, T + 1 + s * 15));
         }
     }
 }

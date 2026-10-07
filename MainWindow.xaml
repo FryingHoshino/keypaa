@@ -2,19 +2,73 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:keypaa"
-        Title="HE Keypad Tool" Height="780" Width="780" MinHeight="700" MinWidth="740"
-        Closing="Window_Closing" PreviewKeyDown="Window_PreviewKeyDown"
-        Background="#FF9CB2B2">
+        Title="HE Keypad Tool" Background="{DynamicResource WindowBg}" Foreground="{DynamicResource Text}" Height="780" Width="780" MinHeight="700" MinWidth="740"
+        Closing="Window_Closing" Activated="Window_Activated" PreviewKeyDown="Window_PreviewKeyDown">
 
     <Window.Resources>
-        <Style TargetType="Button">
-            <Setter Property="Margin" Value="4"/>
-            <Setter Property="Padding" Value="10,4"/>
-        </Style>
-        <Style TargetType="TextBlock">
-            <Setter Property="VerticalAlignment" Value="Center"/>
-        </Style>
-    </Window.Resources>
+    <Style TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/></Style>
+
+    <Style TargetType="Button">
+        <Setter Property="Margin" Value="4"/>
+        <Setter Property="Padding" Value="10,4"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBright}"/>
+        <Setter Property="Background" Value="{DynamicResource ButtonBg}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ChartGrid}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource ButtonHover}"/></Trigger>
+                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource Accent}"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{DynamicResource TextBright}"/>
+        <Setter Property="Background" Value="{DynamicResource ButtonBg}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ChartGrid}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="1" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource ButtonHover}"/></Trigger>
+                        <Trigger Property="IsChecked" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource Accent}"/></Trigger>
+                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="{DynamicResource Accent}"/></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource InputBg}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBright}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ChartGrid}"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource TextBright}"/>
+    </Style>
+    <Style TargetType="CheckBox"><Setter Property="Foreground" Value="{DynamicResource Text}"/></Style>
+    <Style TargetType="GroupBox">
+        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ChartGrid}"/>
+    </Style>
+    <Style TargetType="ProgressBar">
+        <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+        <Setter Property="Background" Value="{DynamicResource InputBg}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource ChartGrid}"/>
+    </Style>
+</Window.Resources>
 
     <Grid>
         <Grid.ColumnDefinitions>
@@ -35,12 +89,13 @@
 
             <WrapPanel Grid.Row="0">
                 <TextBlock Text="Port:" Margin="0,0,6,0"/>
-                <ComboBox x:Name="PortBox" Width="100" VerticalContentAlignment="Center" FontSize="14" FontWeight="Bold"/>
+                <ComboBox x:Name="PortBox" Width="100" VerticalContentAlignment="Center"/>
                 <Button x:Name="BtnRefresh" Content="Refresh" Click="BtnRefresh_Click"/>
                 <Button x:Name="BtnConnect" Content="Connect" Click="BtnConnect_Click"/>
                 <TextBlock x:Name="StatusText" Text="Disconnected" Margin="8,0,0,0"/>
                 <Button x:Name="BtnLogger" Content="Logger ▶" Margin="14,4,4,4" Click="BtnLogger_Click"/>
                 <Button x:Name="BtnLatency" Content="Latency ▼" Click="BtnLatency_Click"/>
+                <Button x:Name="BtnTheme" Content="Theme" Click="BtnTheme_Click" ToolTip="Pick a colour theme"/>
             </WrapPanel>
 
             <CheckBox x:Name="MuteCheck" Grid.Row="1" Margin="0,6,0,6" IsChecked="False"
@@ -91,11 +146,11 @@
                 <StackPanel>
                     <WrapPanel>
                         <TextBlock Text="Slot:" Margin="0,0,6,0"/>
-                        <ComboBox x:Name="ProfileBox" Width="130" SelectionChanged="ProfileBox_SelectionChanged" FontSize="14" Cursor="Cross"/>
-                        <TextBox x:Name="ProfileNameBox" Width="80" MaxLength="7" Margin="8,0,0,0" VerticalContentAlignment="Center" FontSize="14"/>
+                        <ComboBox x:Name="ProfileBox" Width="130" SelectionChanged="ProfileBox_SelectionChanged"/>
+                        <TextBox x:Name="ProfileNameBox" Width="80" MaxLength="7" Margin="8,0,0,0" VerticalContentAlignment="Center"/>
                         <Button x:Name="BtnRename" Content="Rename" Click="BtnRename_Click"/>
                         <TextBlock Text="Copy to:" Margin="14,0,6,0"/>
-                        <ComboBox x:Name="CopyBox" Width="110" FontSize="14"/>
+                        <ComboBox x:Name="CopyBox" Width="110"/>
                         <Button x:Name="BtnCopy" Content="Copy" Click="BtnCopy_Click"/>
                         <Button x:Name="BtnResetSlot" Content="Reset slot" Click="BtnResetSlot_Click"/>
                     </WrapPanel>
@@ -153,12 +208,12 @@
             </WrapPanel>
 
             <TextBox x:Name="LogBox" Grid.Row="5" Margin="0,6,0,0" IsReadOnly="True" MinHeight="50"
-                     VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" FontFamily="Consolas" Foreground="#FFC5DFDC" Background="#FF556767"/>
+                     VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" FontFamily="Consolas"/>
         </Grid>
 
         <!-- ================= LOGGER / SCOPE (expands to the right) ================= -->
         <Border x:Name="LoggerPanel" Grid.Column="1" Margin="0,10,10,10" Padding="10" CornerRadius="6"
-                Background="#FF1B1E21" Visibility="Collapsed">
+                Background="{DynamicResource Panel}" Visibility="Collapsed">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -184,9 +239,9 @@
                         <RowDefinition Height="*" MinHeight="200"/>
                     </Grid.RowDefinitions>
                     <local:TimelineView x:Name="TimelineCtl" Grid.Row="0" Margin="0,8,0,0" ClipToBounds="True"/>
-                    <TextBlock x:Name="StatsText" Grid.Row="1" Margin="0,6,0,0" Foreground="#9CA3AF" Text="-"/>
+                    <TextBlock x:Name="StatsText" Grid.Row="1" Margin="0,6,0,0" Foreground="{DynamicResource TextDim}" Text="-"/>
                     <TextBlock x:Name="EstimateText" Grid.Row="2" Margin="0,4,0,0" FontSize="17" FontWeight="SemiBold"
-                               Foreground="#FBBF24" Text="Polling rate: waiting for input..."/>
+                               Foreground="{DynamicResource Warn}" Text="Polling rate: waiting for input..."/>
                     <local:SpectrumView x:Name="SpectrumCtl" Grid.Row="3" Margin="0,6,0,0" ClipToBounds="True"/>
                 </Grid>
 
@@ -197,17 +252,18 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <local:ScopeView x:Name="ScopeCtl" Grid.Row="0" Margin="0,8,0,0" ClipToBounds="True"/>
-                    <TextBlock Grid.Row="1" Margin="0,6,0,0" Foreground="#9CA3AF" TextWrapping="Wrap"
+                    <TextBlock Grid.Row="1" Margin="0,6,0,0" Foreground="{DynamicResource TextDim}" TextWrapping="Wrap"
                                Text="White-ish dashed = idle/full/deadzones.  Amber dashed = level the next movement must cross to trigger (rapid trigger).  Green triangle = press, red = release.  Wheel = time zoom.  Streams ~2 kHz from the keypad only while this tab is open."/>
                 </Grid>
             </Grid>
         </Border>
 
         <!-- ================= LATENCY LAB (overlay on top of everything) ================= -->
-        <Grid x:Name="LatOverlay" Grid.ColumnSpan="2" Panel.ZIndex="100" Background="#CC000000" Visibility="Collapsed">
-            <Border Margin="22" Padding="14" CornerRadius="8" Background="#FF1F2326">
+        <Grid x:Name="LatOverlay" Grid.ColumnSpan="2" Panel.ZIndex="100" Background="{DynamicResource OverlayDim}" Visibility="Collapsed">
+            <Border Margin="22" Padding="14" CornerRadius="8" Background="{DynamicResource OverlayPanel}">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
@@ -215,25 +271,75 @@
                     <DockPanel Grid.Row="0">
                         <Button DockPanel.Dock="Right" Content="✕" Click="BtnLatClose_Click"/>
                         <Button x:Name="BtnRecord" DockPanel.Dock="Left" Content="● Record" FontWeight="Bold" Margin="0,4,4,4" Click="BtnRecord_Click"/>
-                        <TextBlock x:Name="LatStatus" Foreground="#9CA3AF" Margin="10,0" TextWrapping="Wrap"
+                        <TextBlock x:Name="LatStatus" Foreground="{DynamicResource TextDim}" Margin="10,0" TextWrapping="Wrap"
                                    Text="Latency lab: press Record, tap the keys for 20-30 s, press Stop. Then tick files to compare."/>
                     </DockPanel>
 
-                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                    <!-- Filter lab: filtering vs latency vs noise -->
+                    <Expander x:Name="FiltExp" Grid.Row="1" Margin="0,8,0,0" Foreground="{DynamicResource TextBright}"
+                              Header="Filter lab: how much filtering, and what it costs">
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="400"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Grid.Column="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="46"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Text="HE oversampling" ToolTip="ADC samples averaged per reading. Fewer = faster scan and lower latency, but more noise (noise falls roughly with the square root of the count)."/>
+                                <Slider x:Name="FOvsS" Grid.Row="0" Grid.Column="1" Minimum="1" Maximum="32" Value="8" IsSnapToTickEnabled="True" TickFrequency="1" Margin="0,3"/>
+                                <TextBlock x:Name="FOvsV" Grid.Row="0" Grid.Column="2" HorizontalAlignment="Right" Text="8×"/>
+
+                                <TextBlock Grid.Row="1" Text="ADC clock" ToolTip="Speed of the analog-to-digital converter. Full 10-bit accuracy is only rated up to ~200 kHz, so only ÷128 is inside spec; ÷32 is the firmware's original choice; ÷16 is faster but noisier."/>
+                                <ComboBox x:Name="FAdc" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,3"/>
+
+                                <TextBlock Grid.Row="2" Text="ESC/G/T release debounce" ToolTip="How long ESC, G and T wait before registering a release. 0 = instant, but contact bounce can then cause a double release/press."/>
+                                <Slider x:Name="FDbS" Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="50" Value="7" IsSnapToTickEnabled="True" TickFrequency="1" Margin="0,3"/>
+                                <TextBlock x:Name="FDbV" Grid.Row="2" Grid.Column="2" HorizontalAlignment="Right" Text="7 ms"/>
+
+                                <TextBlock Grid.Row="3" Text="Encoder press confirm" ToolTip="How long the encoder button must stay down before the press is accepted. Lower = quicker, but contact bounce can cause false presses."/>
+                                <Slider x:Name="FReS" Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="100" Value="30" IsSnapToTickEnabled="True" TickFrequency="1" Margin="0,3"/>
+                                <TextBlock x:Name="FReV" Grid.Row="3" Grid.Column="2" HorizontalAlignment="Right" Text="30 ms"/>
+
+                                <WrapPanel Grid.Row="4" Grid.ColumnSpan="3" Margin="0,4,0,0">
+                                    <Button x:Name="BtnFiltApply" Content="Apply (live)" Click="BtnFiltApply_Click"/>
+                                    <Button x:Name="BtnNoise" Content="Noise test" Click="BtnNoise_Click" ToolTip="Keys at rest: measures sensor noise with the current settings (about 1 s)."/>
+                                    <Button x:Name="BtnFiltDefault" Content="Original (8× / ÷32 / 7 / 30)" Click="BtnFiltDefault_Click"/>
+                                    <Button x:Name="BtnFiltSave" Content="Save to EEPROM" Click="BtnFiltSave_Click"/>
+                                </WrapPanel>
+                            </Grid>
+
+                            <ScrollViewer Grid.Column="1" Margin="16,0,0,0" MaxHeight="190" VerticalScrollBarVisibility="Auto">
+                                <TextBlock x:Name="FiltInfo" TextWrapping="Wrap" FontFamily="Consolas" VerticalAlignment="Top"
+                                           Foreground="{DynamicResource TextBright}"/>
+                            </ScrollViewer>
+                        </Grid>
+                    </Expander>
+
+                    <Grid Grid.Row="2" Margin="0,10,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="280"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
                         <DockPanel Grid.Column="0" Margin="0,0,12,0">
-                            <TextBlock DockPanel.Dock="Top" Text="Sessions (CSV files)" Foreground="#F3F4F6" FontWeight="Bold"/>
+                            <TextBlock DockPanel.Dock="Top" Text="Sessions (CSV files)" Foreground="{DynamicResource TextBright}" FontWeight="Bold"/>
                             <WrapPanel DockPanel.Dock="Top">
                                 <Button Content="Refresh" Click="BtnCsvRefresh_Click"/>
                                 <Button Content="Browse..." Click="BtnCsvBrowse_Click"/>
                                 <Button Content="Folder" Click="BtnCsvFolder_Click"/>
                                 <Button Content="Delete ticked" Click="BtnCsvDelete_Click"/>
                             </WrapPanel>
-                            <ListBox x:Name="CsvList">
+                            <ListBox x:Name="CsvList" Background="{DynamicResource ChartBg}" Foreground="{DynamicResource TextBright}" BorderBrush="{DynamicResource ChartGrid}">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <CheckBox Content="{Binding Display}" ToolTip="{Binding Path}"
@@ -250,10 +356,48 @@
                             </Grid.RowDefinitions>
                             <local:HistogramView x:Name="HistCtl" Grid.Row="0" ClipToBounds="True"/>
                             <DataGrid x:Name="StatsGrid" Grid.Row="1" Margin="0,8,0,0" IsReadOnly="True"
-                                      AutoGenerateColumns="True" HeadersVisibility="Column"/>
+                                      AutoGenerateColumns="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      Background="{DynamicResource ChartBg}" Foreground="{DynamicResource TextBright}"
+                                      RowBackground="{DynamicResource ChartBg}" AlternatingRowBackground="{DynamicResource ChartStripe}"
+                                      BorderBrush="{DynamicResource ChartGrid}" HorizontalGridLinesBrush="{DynamicResource ChartGrid}">
+                                <DataGrid.Resources>
+                                    <Style TargetType="DataGridColumnHeader">
+                                        <Setter Property="Background" Value="{DynamicResource ButtonBg}"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource TextBright}"/>
+                                        <Setter Property="BorderBrush" Value="{DynamicResource ChartGrid}"/>
+                                        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                                        <Setter Property="Padding" Value="8,4"/>
+                                    </Style>
+                                </DataGrid.Resources>
+                            </DataGrid>
                         </Grid>
                     </Grid>
                 </Grid>
+            </Border>
+        </Grid>
+        <!-- ================= THEME POPUP (grows out of the Theme button) ================= -->
+        <Grid x:Name="ThemePopup" Grid.ColumnSpan="2" Panel.ZIndex="120" Background="Transparent"
+              Visibility="Collapsed" MouseDown="ThemePopup_BackdropDown">
+            <Border x:Name="ThemeCard" HorizontalAlignment="Left" VerticalAlignment="Top" Width="270" Padding="12"
+                    CornerRadius="10" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}"
+                    Background="{DynamicResource OverlayPanel}" MouseDown="ThemeCard_MouseDown">
+                <Border.RenderTransform><ScaleTransform x:Name="ThemeScale"/></Border.RenderTransform>
+                <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="5" Opacity="0.4"/></Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="Theme" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource TextBright}"/>
+                    <ComboBox x:Name="ThemeBox" Margin="0,8,0,8" SelectionChanged="ThemeBox_SelectionChanged"/>
+                    <UniformGrid Columns="8" Height="26">
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource WindowBg}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource Panel}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource ChartBg}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource Lane0}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource Lane2}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource Lane4}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource Good}"/>
+                        <Border Margin="2" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource ChartGrid}" Background="{DynamicResource Warn}"/>
+                    </UniformGrid>
+                    <Button Content="Edit .txt" HorizontalAlignment="Right" Margin="0,12,0,0" Click="BtnThemeEdit_Click"/>
+                </StackPanel>
             </Border>
         </Grid>
     </Grid>

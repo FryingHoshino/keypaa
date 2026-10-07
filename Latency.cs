@@ -13,8 +13,11 @@ public sealed class ClockSync
     public int Count => s.Count;
     public double BestRttMs { get; private set; } = double.NaN;
 
+    public long LatestX => s.Count > 0 ? s[^1].X : 0;
+
     public void Add(long devUs, long t0, long t1)
     {
+        if (s.Count > 0 && devUs < s[^1].X - 500_000) s.Clear();   // keypad restarted: its clock jumped back, old samples are useless (and the list must stay sorted)
         s.Add(new S { X = devUs, Y = (t0 + t1) / 2, Rtt = t1 - t0 });
         double ms = (t1 - t0) * 1000.0 / Stopwatch.Frequency;
         if (double.IsNaN(BestRttMs) || ms < BestRttMs) BestRttMs = ms;
@@ -74,7 +77,11 @@ public sealed class LatencyRecorder
         while (d.Count > 0 && h.Count > 0)
         {
             long? m = Clock.Map(d.Peek());
-            if (m == null) return;                                    // clock not synced yet
+            if (m == null)
+            {
+                if (Clock.Count > 0 && Clock.LatestX - d.Peek() > 6_000_000) { d.Dequeue(); continue; }   // can never be mapped (e.g. from before a keypad restart)
+                return;                                               // clock not synced yet
+            }
             double ms = (h.Peek() - m.Value) * 1000.0 / Stopwatch.Frequency;
             if (ms > 60) { d.Dequeue(); continue; }                   // device event the PC never saw
             if (ms < -3) { h.Dequeue(); continue; }                   // PC event with no device event
@@ -82,7 +89,7 @@ public sealed class LatencyRecorder
         }
     }
 
-    /// <summary>Recompute every latency with the full sync history (more accurate than the live numbers).</summary>
+    /// <summary>Recompute every latency now that sync samples from both sides of each event exist (more accurate than the live numbers, which only had the past).</summary>
     public List<LatPair> Finish()
     {
         Active = false;
@@ -110,9 +117,14 @@ public static class LatCsv
         }
     }
 
-    public static string Save(List<LatPair> pairs, string profile, ClockSync clock)
+    /// <summary>filter / scanMs / noiseSd are optional metadata so a session can be compared by filter setting later.</summary>
+    public static string Save(List<LatPair> pairs, string profile, ClockSync clock,
+                              string filter = "", double scanMs = double.NaN, double noiseSd = double.NaN)
     {
+        profile = new string(profile.Where(ch => !char.IsControl(ch)).ToArray()).Trim();   // no newlines in the '# profile=' header
         string safe = new string(profile.Where(char.IsLetterOrDigit).ToArray());
+        if (safe.Length == 0) safe = "profile";
+        var sorted = pairs.OrderBy(p => p.HostTicks).ToList();
         string path = Path.Combine(Folder, $"latency_{DateTime.Now:yyyyMMdd_HHmmss}_{safe}.csv");
         var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
@@ -121,33 +133,48 @@ public static class LatCsv
         sb.AppendLine($"# profile={profile}");
         sb.AppendLine($"# sync_samples={clock.Count}");
         sb.AppendLine($"# best_rtt_ms={clock.BestRttMs.ToString("0.000", inv)}");
+        if (filter.Length > 0) sb.AppendLine($"# filter={filter}");
+        if (!double.IsNaN(scanMs)) sb.AppendLine($"# scan_ms={scanMs.ToString("0.000", inv)}");
+        if (!double.IsNaN(noiseSd)) sb.AppendLine($"# noise_sd={noiseSd.ToString("0.00", inv)}");
         sb.AppendLine("time_s,key,edge,latency_ms");
-        long t0 = pairs[0].HostTicks;
-        foreach (var p in pairs)
+        long t0 = sorted[0].HostTicks;
+        foreach (var p in sorted)
             sb.AppendLine(string.Create(inv, $"{(p.HostTicks - t0) / (double)Stopwatch.Frequency:0.000},{EventStore.LaneNames[p.Lane]},{(p.Edge == 0 ? "down" : "up")},{p.Ms:0.000}"));
         File.WriteAllText(path, sb.ToString());
         return path;
     }
 
     /// <summary>Reads any CSV whose last column is latency in ms; '#' lines are metadata.</summary>
-    public static (string profile, double[] ms) Load(string path)
+    public static (LatMeta meta, double[] ms) Load(string path)
     {
-        string profile = "";
+        string profile = "", filter = "", scan = "", noise = "";
         var list = new List<double>();
         foreach (var line in File.ReadLines(path))
         {
-            if (line.StartsWith('#')) { if (line.StartsWith("# profile=")) profile = line[10..]; continue; }
+            if (line.StartsWith('#'))
+            {
+                if (line.StartsWith("# profile=")) profile = line[10..];
+                else if (line.StartsWith("# filter=")) filter = line[9..];
+                else if (line.StartsWith("# scan_ms=")) scan = line[10..] + " ms";
+                else if (line.StartsWith("# noise_sd=")) noise = line[11..] + " cnt";
+                continue;
+            }
             var f = line.Split(',');
             if (f.Length >= 2 && double.TryParse(f[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) list.Add(v);
         }
-        return (profile, list.ToArray());
+        return (new LatMeta(profile, filter, scan, noise), list.ToArray());
     }
 }
+
+public sealed record LatMeta(string Profile, string Filter, string Scan, string Noise);
 
 public sealed class LatRow
 {
     public string File { get; set; } = "";
     public string Profile { get; set; } = "";
+    public string Filter { get; set; } = "";     // filter settings the session was recorded with
+    public string Scan { get; set; } = "";       // keypad scan loop (ms)
+    public string Noise { get; set; } = "";      // sensor noise sd at rest, if a noise test matched the filter
     public int N { get; set; }
     public string Mean { get; set; } = "";
     public string Median { get; set; } = "";
@@ -169,14 +196,14 @@ public static class LatStats
         return i + 1 < sorted.Length ? sorted[i] * (1 - f) + sorted[i + 1] * f : sorted[i];
     }
 
-    public static LatRow Row(string name, string profile, double[] ms, double? baseMean)
+    public static LatRow Row(string name, LatMeta meta, double[] ms, double? baseMean)
     {
         var s = ms.OrderBy(v => v).ToArray();
         double mean = s.Average(), sd = Math.Sqrt(s.Sum(v => (v - mean) * (v - mean)) / s.Length);
         string F(double v) => v.ToString("0.00") + " ms";
         return new LatRow
         {
-            File = name, Profile = profile, N = s.Length, Mean = F(mean), Median = F(Pct(s, 50)),
+            File = name, Profile = meta.Profile, Filter = meta.Filter, Scan = meta.Scan, Noise = meta.Noise, N = s.Length, Mean = F(mean), Median = F(Pct(s, 50)),
             P95 = F(Pct(s, 95)), P99 = F(Pct(s, 99)), Min = F(s[0]), Max = F(s[^1]), Jitter = F(sd),
             VsFirst = baseMean == null ? "baseline" : $"{mean - baseMean.Value:+0.00;-0.00;0.00} ms"
         };

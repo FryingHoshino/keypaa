@@ -26,7 +26,7 @@ public partial class MainWindow
 
     void InitLatency()
     {
-        syncTimer.Tick += (_, _) => { SendSync(); UpdateLatStatus(); };
+        syncTimer.Tick += (_, _) => { Drain(); SendSync(); UpdateLatStatus(); };   // Drain: keeps working when no frames render
         Directory.CreateDirectory(LatCsv.Folder);
     }
 
@@ -39,7 +39,9 @@ public partial class MainWindow
         long t0 = Stopwatch.GetTimestamp();
         syncPending[id] = t0;
         try { port.WriteLine("SYNC " + id); } catch { /* ignore */ }
-        if (syncPending.Count > 50) foreach (var k in syncPending.Keys.Take(25).ToList()) syncPending.Remove(k);
+        long cutoff = t0 - 5 * Stopwatch.Frequency;   // forget pings that were never answered (oldest first, by age)
+        if (syncPending.Count > 50)
+            foreach (var k in syncPending.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList()) syncPending.Remove(k);
     }
 
     void OnSyncReply(int id, long devUs, long ts)
@@ -61,10 +63,12 @@ public partial class MainWindow
 
     void StartRecording()
     {
-        if (!port.IsOpen) { MessageBox.Show("Connect to the keypad first.", "Latency"); return; }
+        if (!connected || !port.IsOpen) { MessageBox.Show("Connect to the keypad first.", "Latency"); return; }
         if (MuteCheck.IsChecked == true) MuteCheck.IsChecked = false;   // muted keys never reach the PC
+        if (calMuted) EndCalMute();                                      // a calibration mute still pending
         syncPending.Clear();
         rec.Start();
+        UpdateScopeStream();                                             // scope stream off while recording
         Send("EVT 1");
         syncTimer.Start();
         BtnRecord.Content = "■ Stop and save";
@@ -77,6 +81,7 @@ public partial class MainWindow
         syncTimer.Stop();
         Send("EVT 0");
         var pairs = rec.Finish();
+        UpdateScopeStream();
         BtnRecord.Content = "● Record";
         BtnLatency.Content = "Latency ▼";
         if (pairs.Count < 5)
@@ -84,7 +89,7 @@ public partial class MainWindow
             LatStatus.Text = $"Only {pairs.Count} paired events - nothing saved. Tap the keys for 20-30 s while recording (keys must not be muted).";
             return;
         }
-        string path = LatCsv.Save(pairs, profNames[activeProfile], rec.Clock);
+        string path = LatCsv.Save(pairs, profNames[activeProfile], rec.Clock, FilterTag, ScanMs, NoiseSdForCurrentFilter);
         LatStatus.Text = $"Saved {Path.GetFileName(path)}  ({pairs.Count} samples, mean {pairs.Average(p => p.Ms):0.00} ms)";
         RefreshCsvList(path);
     }
@@ -101,7 +106,7 @@ public partial class MainWindow
     void OpenLatency()
     {
         var wa = SystemParameters.WorkArea;
-        if (Width < 1000 || Height < 680)
+        if (WindowState == WindowState.Normal && (Width < 1000 || Height < 680))
         {
             prevW = Width; prevH = Height;
             Width = Math.Max(Width, Math.Min(1000, wa.Width - 20));
@@ -110,6 +115,7 @@ public partial class MainWindow
             Top = wa.Top + (wa.Height - Height) / 2;
         }
         RefreshCsvList();
+        UpdateFilterInfo();
         LatOverlay.Visibility = Visibility.Visible;
         LatOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
     }
@@ -147,7 +153,7 @@ public partial class MainWindow
 
     void Compare()
     {
-        var series = new List<(string Name, Brush Color, double[] Data)>();
+        var series = new List<(string Name, int ColorIndex, double[] Data)>();
         var rows = new List<LatRow>();
         double? baseMean = null;
         int ci = 0;
@@ -155,11 +161,11 @@ public partial class MainWindow
         {
             try
             {
-                var (prof, ms) = LatCsv.Load(it.Path);
+                var (meta, ms) = LatCsv.Load(it.Path);
                 if (ms.Length == 0) continue;
-                rows.Add(LatStats.Row(it.Display, prof, ms, baseMean));
+                rows.Add(LatStats.Row(it.Display, meta, ms, baseMean));
                 baseMean ??= ms.Average();
-                series.Add((it.Display, HistogramView.Palette[ci++ % HistogramView.Palette.Length], ms));
+                series.Add((it.Display, ci++, ms));   // colour is resolved at draw time so theme changes recolour it
             }
             catch (Exception ex) { Log("CSV load failed: " + ex.Message); }
         }

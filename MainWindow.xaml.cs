@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 
 namespace keypaa;
@@ -19,7 +20,7 @@ public partial class MainWindow : Window
     static readonly string[] KeyNames = { "Key 1 (y, A0)", "Key 2 (u, A1)" };
     static readonly double[] StdRates = { 125, 250, 500, 1000, 2000, 4000, 8000 };
 
-    readonly SerialPort port = new() { BaudRate = 115200, NewLine = "\n", DtrEnable = true, ReadTimeout = 200 };
+    readonly SerialPort port = new() { BaudRate = 115200, NewLine = "\n", DtrEnable = true, ReadTimeout = 200, WriteTimeout = 500 };
     Thread? reader;
     volatile bool readerRun;
 
@@ -36,6 +37,14 @@ public partial class MainWindow : Window
     readonly ConcurrentQueue<(int id, long dev, long ts)> syncQ = new();
     long lastDev;
     bool devInit;
+    string? latestV;                         // newest "V," line, applied once per frame (reader thread -> UI thread)
+    bool connected;                          // our own state: SerialPort.IsOpen can be wrong after an unplug
+
+    // HE keys are muted automatically while calibrating and restored afterwards
+    bool calMuted;
+    readonly DispatcherTimer calTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    readonly Stopwatch calClock = new();
+    readonly bool[] keyDown = new bool[NumKeys];
 
     // profiles (mirror of what is on the keypad)
     readonly string[] profNames = new string[ProfileCount];
@@ -53,7 +62,13 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        Theme.Register(Application.Current.Resources);
         InitializeComponent();
+        var wa0 = SystemParameters.WorkArea;                      // small screens: never exceed the work area
+        MinHeight = Math.Min(MinHeight, wa0.Height - 20);
+        Height = Math.Min(Height, wa0.Height - 20);
+        Theme.Changed += RefreshThemeViews;
+        ThemeBox.ItemsSource = Theme.PresetNames;
         bars = new[] { Bar1, Bar2 };
         rawTxt = new[] { Raw1, Raw2 };
         stateTxt = new[] { State1, State2 };
@@ -65,7 +80,7 @@ public partial class MainWindow : Window
 
         for (int i = 0; i < ProfileCount; i++)
         {
-            profNames[i] = "Profile" + (i + 1);
+            profNames[i] = "P" + (i + 1);
             profVals[i] = new[] { 14, 10, 10, 10, 14, 10, 10, 10 };
             ProfileBox.Items.Add("");
             CopyBox.Items.Add("");
@@ -76,6 +91,8 @@ public partial class MainWindow : Window
         SetConnectedUi(false);
         RefreshPorts();
         InitLatency();
+        InitFilter();
+        calTimer.Tick += CalTick;
 
         TimelineCtl.Store = store;
         hook.Start();
@@ -97,38 +114,49 @@ public partial class MainWindow : Window
 
     void Connect()
     {
+        if (connected) return;
         if (PortBox.SelectedItem is not string name) { Log("No port selected."); return; }
         try
         {
             port.PortName = name;
             port.Open();
-            devInit = false;
-            readerRun = true;
-            reader = new Thread(ReadLoop) { IsBackground = true, Priority = ThreadPriority.AboveNormal, Name = "SerialRead" };
-            reader.Start();
-            SetConnectedUi(true);
-            Log($"Connected to {name}");
-            Send(MuteCheck.IsChecked == true ? "KEYS 0" : "KEYS 1");
-            Send("GET");
-            Send("STREAM 1");
-            UpdateScopeStream();
         }
-        catch (Exception ex) { Log("Connect failed: " + ex.Message); }
+        catch (Exception ex) { Log("Connect failed: " + ex.Message); return; }
+
+        connected = true;
+        devInit = false;
+        latestV = null;
+        Array.Clear(keyDown);
+        readerRun = true;
+        reader = new Thread(ReadLoop) { IsBackground = true, Priority = ThreadPriority.AboveNormal, Name = "SerialRead" };
+        reader.Start();
+        SetConnectedUi(true);
+        Log($"Connected to {name}");
+        Send(MuteCheck.IsChecked == true ? "KEYS 0" : "KEYS 1");
+        Send("GET");
+        Send("STREAM 1");
+        UpdateScopeStream();
     }
 
     void Disconnect()
     {
-        if (!port.IsOpen) return;
+        if (!connected) return;
+        connected = false;
+        calTimer.Stop();
+        calMuted = false;
         if (rec.Active) StopRecording();
-        try
+        if (port.IsOpen)
         {
-            port.WriteLine("STREAM 0");
-            port.WriteLine("SCOPE 0");
-            port.WriteLine("EVT 0");
-            port.WriteLine("KEYS 1");   // give the keys back
-            Thread.Sleep(50);
+            try
+            {
+                port.WriteLine("STREAM 0");
+                port.WriteLine("SCOPE 0");
+                port.WriteLine("EVT 0");
+                port.WriteLine("KEYS 1");   // give the keys back
+                Thread.Sleep(50);
+            }
+            catch { /* port already dead (unplugged): nothing to tell it */ }
         }
-        catch { /* ignore */ }
         readerRun = false;
         try { port.Close(); } catch { /* ignore */ }
         reader?.Join(300);
@@ -144,6 +172,7 @@ public partial class MainWindow : Window
         PortBox.IsEnabled = !connected;
         BtnRefresh.IsEnabled = !connected;
         foreach (var c in connectedOnly) c.IsEnabled = connected;
+        SetFilterButtons(connected);
     }
 
     void Send(string cmd)
@@ -169,12 +198,20 @@ public partial class MainWindow : Window
             for (int i = 0; i < n; i++)
             {
                 char c = (char)buf[i];
-                if (c != '\n') { if (c != '\r') sb.Append(c); continue; }
+                if (c != '\n') { if (c != '\r' && sb.Length < 512) sb.Append(c); continue; }
                 string line = sb.ToString();
                 sb.Clear();
                 if (line.Length > 0) Dispatch(line, ts);
             }
         }
+        // the loop only ends by itself when the port died (unplugged / driver error)
+        if (readerRun)
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (!connected) return;
+                Log("Device lost (serial read failed).");
+                Disconnect();
+            }));
     }
 
     long Unwrap(uint t)
@@ -191,21 +228,34 @@ public partial class MainWindow : Window
         return v;
     }
 
+    static bool IsHex(string s, int i, int n)
+    {
+        for (int k = 0; k < n; k++)
+        {
+            char c = s[i + k];
+            if (!(c >= '0' && c <= '9' || c >= 'A' && c <= 'F' || c >= 'a' && c <= 'f')) return false;
+        }
+        return true;
+    }
+
     void Dispatch(string line, long ts)
     {
         switch (line[0])
         {
-            case 'W' when line.Length == 22:
+            case 'V' when line.Length > 1 && line[1] == ',':
+                latestV = line;               // only the newest matters; applied once per frame in Drain()
+                break;
+            case 'W' when line.Length == 22 && IsHex(line, 1, 21):
                 scopeQ.Enqueue(new ScopeSample
                 {
                     T = Unwrap(Hx(line, 1, 8)), V0 = (ushort)Hx(line, 9, 3), V1 = (ushort)Hx(line, 12, 3),
                     R0 = (ushort)Hx(line, 15, 3), R1 = (ushort)Hx(line, 18, 3), F = (byte)Hx(line, 21, 1)
                 });
                 break;
-            case 'E' when line.Length == 11:
+            case 'E' when line.Length == 11 && IsHex(line, 1, 10):
                 devEvQ.Enqueue(((int)Hx(line, 1, 1), (int)Hx(line, 2, 1), Unwrap(Hx(line, 3, 8))));
                 break;
-            case 'S' when line.Length == 13:
+            case 'S' when line.Length == 13 && IsHex(line, 1, 12):
                 syncQ.Enqueue(((int)Hx(line, 1, 4), Unwrap(Hx(line, 5, 8)), ts));
                 break;
             default:
@@ -216,6 +266,18 @@ public partial class MainWindow : Window
 
     void OnFrame(object? sender, EventArgs e)
     {
+        Drain();
+        if (loggerOpen)
+        {
+            if (scopeTab) { if (!ScopeCtl.IsFrozen) ScopeCtl.InvalidateVisual(); }
+            else if (!TimelineCtl.IsFrozen) TimelineCtl.InvalidateVisual();
+        }
+    }
+
+    /// <summary>Moves everything the hook/serial threads queued onto the UI thread.
+    /// Also called from the sync timer so recording keeps working while no frames are rendered (minimized).</summary>
+    void Drain()
+    {
         while (hook.Queue.TryDequeue(out var ev))
         {
             store.Add(ev);
@@ -225,12 +287,8 @@ public partial class MainWindow : Window
         while (devEvQ.TryDequeue(out var d))
             if (rec.Active && d.lane < 7) rec.AddDevice(d.lane, d.state == 1 ? 0 : 1, d.dev);
         while (syncQ.TryDequeue(out var y)) OnSyncReply(y.id, y.dev, y.ts);
-
-        if (loggerOpen)
-        {
-            if (scopeTab) { if (!ScopeCtl.IsFrozen) ScopeCtl.InvalidateVisual(); }
-            else if (!TimelineCtl.IsFrozen) TimelineCtl.InvalidateVisual();
-        }
+        var v = Interlocked.Exchange(ref latestV, null);
+        if (v != null) HandleLine(v);
     }
 
     void HandleLine(string line)
@@ -243,8 +301,9 @@ public partial class MainWindow : Window
             {
                 if (int.TryParse(p[1 + i], out int v)) { bars[i].Value = Math.Clamp(v, 0, 1023); rawTxt[i].Text = v.ToString(); }
                 bool down = p[1 + NumKeys + i] == "1";
+                keyDown[i] = down;
                 stateTxt[i].Text = down ? "PRESSED" : "-";
-                stateTxt[i].Foreground = down ? Brushes.Green : SystemColors.ControlTextBrush;
+                stateTxt[i].SetResourceReference(TextBlock.ForegroundProperty, down ? "KeyDown" : "Text");
             }
         }
         else if (p[0] == "C" && p.Length == 5)                    // C,idle0,full0,idle1,full1
@@ -272,16 +331,58 @@ public partial class MainWindow : Window
             LoadSliders();
             Log($"Active profile: {activeProfile + 1} ({profNames[activeProfile]})");
         }
-        else Log(line);
+        else if (!HandleFilterLine(p)) Log(line);
     }
 
-    // ---------- calibration ----------
+    // ---------- calibration (HE keys are muted automatically, then restored) ----------
+
+    bool BeginCalMute(string why = "calibration")
+    {
+        if (rec.Active) { Log($"Stop the latency recording before starting {why}."); return false; }
+        calTimer.Stop();
+        calMuted = true;
+        Send("KEYS 0");   // pressing the keys during calibration must not type into the PC
+        Log($"Keys muted for {why}.");
+        return true;
+    }
+
+    // restore once the command has been processed and the keys are physically up (or after 5 s at the latest)
+    void EndCalMuteWhenReleased()
+    {
+        calClock.Restart();
+        calTimer.Start();
+    }
+
+    void CalTick(object? sender, EventArgs e)
+    {
+        if (!calMuted) { calTimer.Stop(); return; }
+        long ms = calClock.ElapsedMilliseconds;
+        if ((ms > 400 && !keyDown[0] && !keyDown[1]) || ms > 5000) EndCalMute();
+    }
+
+    void EndCalMute()
+    {
+        calTimer.Stop();
+        if (!calMuted) return;
+        calMuted = false;
+        bool muted = MuteCheck.IsChecked == true;
+        Send(muted ? "KEYS 0" : "KEYS 1");
+        Log(muted ? "Done (keys stay muted: checkbox is ticked)." : "Done, keys back on.");
+    }
+
+    // pull the new idle/full values; skipped while slider edits are pending (the reply would overwrite them)
+    void RefreshAfterCal() { if (!SlidersDirty()) Send("GET"); }
 
     void BtnIdle_Click(object sender, RoutedEventArgs e)
     {
+        if (!BeginCalMute()) return;
         if (MessageBox.Show("Release BOTH HE keys completely, then click OK.", "Calibrate IDLE",
-                MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
-        Send("CALR");
+                MessageBoxButton.OKCancel, MessageBoxImage.Information) == MessageBoxResult.OK)
+        {
+            Send("CALR");
+            RefreshAfterCal();
+        }
+        EndCalMuteWhenReleased();
     }
 
     void BtnFull1_Click(object sender, RoutedEventArgs e) => CalibrateFull(0);
@@ -289,10 +390,15 @@ public partial class MainWindow : Window
 
     void CalibrateFull(int key)
     {
+        if (!BeginCalMute()) return;
         if (MessageBox.Show($"Press {KeyNames[key]} fully down and HOLD it, then click OK\n" +
                 "(the reading is taken right after you click).", "Calibrate FULL",
-                MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
-        Send($"CALP {key}");
+                MessageBoxButton.OKCancel, MessageBoxImage.Information) == MessageBoxResult.OK)
+        {
+            Send($"CALP {key}");
+            RefreshAfterCal();
+        }
+        EndCalMuteWhenReleased();   // keys stay muted until you let go of the key
     }
 
     // ---------- profiles ----------
@@ -328,6 +434,14 @@ public partial class MainWindow : Window
             };
     }
 
+    bool SlidersDirty()
+    {
+        for (int k = 0; k < NumKeys; k++)
+            for (int j = 0; j < 4; j++)
+                if ((int)sld[k][j].Value != profVals[activeProfile][k * 4 + j]) return true;
+        return false;
+    }
+
     void ApplySliders()
     {
         for (int k = 0; k < NumKeys; k++)
@@ -342,6 +456,11 @@ public partial class MainWindow : Window
     void ProfileBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (suppress || ProfileBox.SelectedIndex < 0) return;
+        if (SlidersDirty())
+        {
+            ApplySliders();   // don't silently throw away edits of the slot we are leaving (live only, not saved)
+            Log($"Applied pending slider edits to slot {activeProfile + 1} before switching (not saved to EEPROM yet).");
+        }
         Send($"PROF {ProfileBox.SelectedIndex}");   // keypad switches instantly and replies with its settings
     }
 
@@ -355,12 +474,12 @@ public partial class MainWindow : Window
     {
         ApplySliders();
         Send("SAVE");
-        Log("Saved all profiles + calibration to EEPROM.");
+        Log("Saved all profiles, calibration and filter settings to EEPROM.");
     }
 
     void BtnRename_Click(object sender, RoutedEventArgs e)
     {
-        string name = new string(ProfileNameBox.Text.Trim().Select(c => c <= ' ' || c == ',' ? '_' : c).ToArray());
+        string name = new string(ProfileNameBox.Text.Trim().Select(c => c <= ' ' || c > '~' || c == ',' ? '_' : c).ToArray());
         if (name.Length == 0) return;
         if (name.Length > 7) name = name[..7];
         profNames[activeProfile] = name;
@@ -376,6 +495,7 @@ public partial class MainWindow : Window
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
         ApplySliders();
         Send($"PCOPY {activeProfile} {t}");
+        Send("GET");   // refresh the local mirror whether or not the firmware echoes the change
     }
 
     void BtnResetSlot_Click(object sender, RoutedEventArgs e)
@@ -383,6 +503,7 @@ public partial class MainWindow : Window
         if (MessageBox.Show($"Reset slot {activeProfile + 1} to defaults?", "Reset profile",
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
         Send($"PRESET {activeProfile}");
+        Send("GET");
     }
 
     void BtnRead_Click(object sender, RoutedEventArgs e) => Send("GET");
@@ -392,18 +513,96 @@ public partial class MainWindow : Window
         if (MessageBox.Show("Reset ALL profiles and calibration to the built-in defaults?\n(Not permanent until you Save.)",
                 "Defaults", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
         Send("DEFAULTS");
+        Send("GET");
     }
 
     // ---------- window / misc ----------
 
     void BtnRefresh_Click(object sender, RoutedEventArgs e) => RefreshPorts();
-    void BtnConnect_Click(object sender, RoutedEventArgs e) { if (port.IsOpen) Disconnect(); else Connect(); }
-    void MuteCheck_Changed(object sender, RoutedEventArgs e) => Send(MuteCheck.IsChecked == true ? "KEYS 0" : "KEYS 1");
+
+    bool themeOpen;
+
+    void BtnTheme_Click(object sender, RoutedEventArgs e)
+    {
+        if (themeOpen) CloseThemePopup(); else OpenThemePopup();
+    }
+
+    // the card grows out of the Theme button (scale + fade from the button's position)
+    void OpenThemePopup()
+    {
+        themeOpen = true;
+        var root = (FrameworkElement)Content;
+        const double cw = 270;
+        var p = BtnTheme.TranslatePoint(new Point(0, BtnTheme.ActualHeight + 4), root);
+        double left = Math.Clamp(p.X, 8, Math.Max(8, root.ActualWidth - cw - 8));
+        ThemeCard.Margin = new Thickness(left, p.Y, 0, 0);
+        ThemeCard.RenderTransformOrigin = new Point(Math.Clamp((p.X + BtnTheme.ActualWidth / 2 - left) / cw, 0, 1), 0);
+        suppress = true; ThemeBox.SelectedItem = Theme.Current; suppress = false;
+        ThemePopup.Visibility = Visibility.Visible;
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var d = TimeSpan.FromMilliseconds(170);
+        ThemeScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.55, 1, d) { EasingFunction = ease });
+        ThemeScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.3, 1, d) { EasingFunction = ease });
+        ThemeCard.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(130)));
+    }
+
+    void CloseThemePopup()
+    {
+        if (!themeOpen) return;
+        themeOpen = false;
+        var d = TimeSpan.FromMilliseconds(120);
+        var fade = new DoubleAnimation(1, 0, d);
+        fade.Completed += (_, _) => { if (!themeOpen) ThemePopup.Visibility = Visibility.Collapsed; };
+        ThemeScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 0.6, d));
+        ThemeScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 0.35, d));
+        ThemeCard.BeginAnimation(OpacityProperty, fade);
+    }
+
+    void ThemePopup_BackdropDown(object sender, MouseButtonEventArgs e) => CloseThemePopup();
+    void ThemeCard_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+
+    void ThemeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppress || ThemeBox.SelectedItem is not string name) return;
+        try { Theme.Apply(name); }
+        catch (Exception ex) { Log("Theme error: " + ex); }
+    }
+
+    void BtnThemeEdit_Click(object sender, RoutedEventArgs e)
+    {
+        try { Theme.Apply("Custom"); }   // creates theme.txt on first use
+        catch (Exception ex) { Log("Theme error: " + ex); }
+        suppress = true; ThemeBox.SelectedItem = "Custom"; suppress = false;
+        try { Process.Start("notepad.exe", "\"" + Theme.FilePath + "\""); }
+        catch (Exception ex) { Log("Could not open theme file: " + ex.Message); }
+    }
+
+    // edit theme.txt in Notepad, save, click back on the app: colours update live
+    void Window_Activated(object? sender, EventArgs e)
+    {
+        if (Theme.Current == "Custom") Theme.Apply("Custom", save: false);
+    }
+
+    void RefreshThemeViews()
+    {
+        TimelineCtl.Refresh();
+        SpectrumCtl.InvalidateVisual();
+        ScopeCtl.InvalidateVisual();
+        HistCtl.InvalidateVisual();
+    }
+    void BtnConnect_Click(object sender, RoutedEventArgs e) { if (connected) Disconnect(); else Connect(); }
+    void MuteCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (calMuted) return;   // calibration owns the mute state; it restores the checkbox state when done
+        Send(MuteCheck.IsChecked == true ? "KEYS 0" : "KEYS 1");
+    }
 
     void Window_Closing(object? sender, CancelEventArgs e)
     {
         Disconnect();
         syncTimer.Stop();
+        calTimer.Stop();
         analysisTimer.Stop();
         CompositionTarget.Rendering -= OnFrame;
         hook.Dispose();
@@ -412,12 +611,14 @@ public partial class MainWindow : Window
     // The keypad types y/u/t/g/Esc/Left into whatever has focus; keep them from changing sliders or the port box.
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (Keyboard.FocusedElement is TextBox { IsReadOnly: false }) return;   // let the rename box accept y/u/t/g/arrows
         var k = e.Key == Key.System ? e.SystemKey : e.Key;
         if (k is Key.Left or Key.Y or Key.U or Key.T or Key.G or Key.Escape) e.Handled = true;
     }
 
     void Log(string msg)
     {
+        if (LogBox.Text.Length > 60000) LogBox.Text = LogBox.Text[30000..];   // keep the log bounded
         LogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {msg}{Environment.NewLine}");
         LogBox.ScrollToEnd();
     }
@@ -436,7 +637,7 @@ public partial class MainWindow : Window
             LeftCol.Width = new GridLength(LeftWidth);
             LoggerCol.Width = new GridLength(1, GridUnitType.Star);
             LoggerPanel.Visibility = Visibility.Visible;
-            MinWidth = LeftWidth + 480;
+            MinWidth = Math.Min(LeftWidth + 480, wa.Width - 20);
             Width = Math.Min(wa.Width - 20, LeftWidth + 1000);
             Height = Math.Min(wa.Height - 20, Math.Max(Height, 780));
             BtnLogger.Content = "Logger ◀";
@@ -475,7 +676,7 @@ public partial class MainWindow : Window
     // the keypad only streams fast samples while the scope is actually visible
     void UpdateScopeStream()
     {
-        bool want = port.IsOpen && loggerOpen && scopeTab && !ScopeCtl.IsFrozen;
+        bool want = connected && loggerOpen && scopeTab && !ScopeCtl.IsFrozen && !rec.Active;   // not while recording latency: the 2 kHz stream adds jitter to the sync replies
         if (want == scopeStreamOn) return;
         scopeStreamOn = want;
         Send(want ? "SCOPE 1" : "SCOPE 0");
@@ -495,7 +696,7 @@ public partial class MainWindow : Window
         store.Clear();
         SpectrumCtl.SetData(null, 0, "");
         EstimateText.Text = "Polling rate: waiting for input...";
-        EstimateText.Foreground = Brushes.Goldenrod;
+        EstimateText.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
         analysedVersion = -1;
         UpdateStats();
         TimelineCtl.InvalidateVisual();
@@ -506,7 +707,7 @@ public partial class MainWindow : Window
         long now = Stopwatch.GetTimestamp(), from = now - 5 * Stopwatch.Frequency;
         int recent = 0;
         for (int i = store.Times.Count - 1; i >= 0 && store.Times[i] >= from; i--) recent++;
-        StatsText.Text = $"{store.Times.Count} events  |  {recent / 5.0:0.0}/s (last 5 s)  |  hook: {(hook.Active ? "on" : "FAILED")}";
+        StatsText.Text = $"{store.Times.Count} events  |  {recent / 5.0:0.0}/s (last 5 s)  |  hook: {(hook.Active && hook.Error == null ? "on" : "FAILED (" + (hook.Error ?? "not started") + ")")}";
     }
 
     async void AnalysisTick(object? sender, EventArgs e)
@@ -534,12 +735,12 @@ public partial class MainWindow : Window
         if (n < 40)
         {
             EstimateText.Text = $"Polling rate: collecting... ({n} events, need ~100+)";
-            EstimateText.Foreground = Brushes.Goldenrod;
+            EstimateText.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
         }
         else if (analyzer.Snr < 60)
         {
             EstimateText.Text = $"Polling rate: unclear (SNR {analyzer.Snr:0}x, {n} events) - keep tapping";
-            EstimateText.Foreground = Brushes.Goldenrod;
+            EstimateText.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
         }
         else
         {
@@ -547,7 +748,7 @@ public partial class MainWindow : Window
             double std = StdRates.OrderBy(r => Math.Abs(Math.Log(f / r))).First();
             label = Math.Abs(f / std - 1) < 0.04 ? $"{std:0} Hz" : $"{f:0} Hz";
             EstimateText.Text = $"Polling rate ~ {label}   (peak {f:0.0} Hz, SNR {analyzer.Snr:0}x, {n} events)";
-            EstimateText.Foreground = (Brush)new BrushConverter().ConvertFromString("#5EEAD4")!;
+            EstimateText.SetResourceReference(TextBlock.ForegroundProperty, "Good");
         }
         SpectrumCtl.SetData(analyzer.Spectrum, label.Length > 0 ? analyzer.EstimateHz : 0, label);
     }
